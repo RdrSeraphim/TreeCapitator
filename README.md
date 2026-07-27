@@ -1,4 +1,9 @@
-# CrisTreeCapitator
+# TreeCapitator
+
+Fork of CrisTreeCapitator for 26.1.* support and purging unused elements.
+
+---
+
 
 ## Tested on 1.21!
 The latest build has been tested and works for 1.21.*, 1.20.*, 1.19.*, 1.18.*, 1.17.*, 1.16.*, 1.15.*, 1.14.* and 1.13.*. I recommend using the latest build always in servers running on those Minecraft versions. I'm also still around so please feel free to leave here any issues you may encounter or your suggestions if you want to, I'll read them.

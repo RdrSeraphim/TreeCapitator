@@ -7,12 +7,16 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
+import java.util.Set;
+import java.util.UUID;
 import java.util.logging.Level;
+import java.util.stream.Collectors;
 
-import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
+import objs.PlacedBlocks;
 import org.bukkit.GameMode;
 import org.bukkit.Material;
 import org.bukkit.Sound;
@@ -22,43 +26,39 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Player;
-import org.bukkit.entity.Pose;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.Damageable;
 import org.bukkit.inventory.meta.ItemMeta;
-import org.bukkit.metadata.FixedMetadataValue;
-import org.bukkit.metadata.MetadataValue;
-import org.bukkit.plugin.PluginDescriptionFile;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
 
-import com.sk89q.worldguard.bukkit.WorldGuardPlugin;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextColor;
+import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 
 import lang.LocalizedString;
 import objs.Configuration;
-import objs.Updater;
+import org.jspecify.annotations.NonNull;
 
 public class TreeCapitator extends JavaPlugin implements Listener {
-	private PluginDescriptionFile desc = getDescription();
 
-	public File pluginFolder = new File("plugins/CrisTreeCapitator/");
+	public File pluginFolder = new File("plugins/TreeCapitator/");
 
 	// Colors
-	public final ChatColor mainColor = ChatColor.BLUE;
-	public final ChatColor textColor = ChatColor.WHITE;
-	public final ChatColor accentColor = ChatColor.GOLD;
-	public final ChatColor errorColor = ChatColor.DARK_RED;
-	public final String header = mainColor + "[" + desc.getName() + "]" + textColor + " ";
-
-	// (Soft)Dependencies
-	private WorldGuardPlugin wg;
+	public final TextColor mainColor = NamedTextColor.BLUE;
+	public final TextColor textColor = NamedTextColor.WHITE;
+	public final TextColor accentColor = NamedTextColor.GOLD;
+	public final TextColor errorColor = NamedTextColor.DARK_RED;
+	public final Component header = Component.text("[" + getName() + "] ", mainColor);
 
 	// Files
 	private Configuration config;
@@ -72,7 +72,7 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 
 	private static final String STRG_VIP_MODE = "vip mode";
 	private boolean vipMode = false;
-	private static final String DESC_VIP_MODE = "Sets vip mode. If enabled, a permission node (cristreecapitator.vip) is required to take down trees at once.";
+	private static final String DESC_VIP_MODE = "Sets vip mode. If enabled, a permission node (treecapitator.vip) is required to take down trees at once.";
 
 	private static final String STRG_AXE_NEEDED = "axe needed";
 	private boolean axeNeeded = true;
@@ -96,7 +96,6 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 	private static final String STRG_INVINCIBLE_REPLANT = "invincible replant";
 	private boolean invincibleReplant = false;
 	private static final String DESC_INVINCIBLE_REPLANT = "Sets if saplings replanted by this plugin should be unbreakable by regular players (including the block beneath).";
-	private static final String META_INV_REPL = "inv_repl";
 
 	private static final String STRG_ADMIT_NETHER_TREES = "cut nether \"trees\"";
 	private boolean admitNetherTrees = false;
@@ -115,82 +114,34 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 	private boolean ignoreLeaves = false;
 	private static final String DESC_IGNORE_LEAVES = "If true, leaves will not be destroyed and will not connect logs. In vanilla terrain forests this will prevent several trees to be cut down at once, but it will leave most big oak trees floating.";
 
-	private static final String STRG_SNEAKING_PREVENTION = "crouch for prevention";
-	private String sneakingPrevention = "false";
-	private static final String DESC_SNEAKING_PREVENTION = "If true, crouching players won't trigger this plugin or only crouching players will. If \"inverted\", players will have to crouch to destroy trees instantly. False by default so updating from previous versions won't change this behaviour without notice.";
-
 	private static final String STRG_LANGUAGE = "language";
 	private String language = "english";
-	private static final String DESC_LANGUAGE = "Name of the language to use, as specified in the .json files inside"
-			+ LocalizedString.LANG_FOLDER
-			+ ". To make your own language, copy default.json and edit it. Use the value you specify inside \"name\" here in order to select it.";
 
 	private JSONParser parser = new JSONParser();
 	private Material[] extraLogs = new Material[0], extraLeaves = new Material[0];
 
-	// Messages
-	// private final String joinMensajeActivated = header + "Remember " + accentColor + "{player}" + textColor
-	// + ", you can use " + accentColor + "/tc toggle" + textColor + " to avoid breaking things made of logs.";
-	// private final String joinMensajeDeactivated = header + "Remember " + accentColor + "{player}" + textColor
-	// + ", you can use " + accentColor + "/tc toggle" + textColor + " to cut down trees faster.";
-
-	// Metadata
-	private static final String PLAYER_ENABLE_META = "cristichi_treecap_meta_disable";
-
-	// Updater
-	private static final int ID = 294976;
-	private static Updater updater;
-	public static boolean update = false;
-
-	private boolean checkUpdate() {
-		try {
-			updater = new Updater(this, ID, this.getFile(), Updater.UpdateType.NO_DOWNLOAD, false);
-			update = updater.getResult() == Updater.UpdateResult.UPDATE_AVAILABLE;
-		} catch (ParseException e) {
-			e.printStackTrace();
-		}
-
-		return update;
-	}
+	// Per-player session state (replaces the deprecated Bukkit metadata API)
+	private final Map<UUID, Boolean> pluginEnabled = new HashMap<>();
+	private final Map<UUID, Long> lastProtectedMsgTime = new HashMap<>();
+	// Blocks currently flagged as an invincible replant (the sapling/propagule/fungus + the block beneath it)
+	private final Set<String> invincibleReplantBlocks = new HashSet<>();
 
 	@Override
 	public void onEnable() {
-		wg = (WorldGuardPlugin) getServer().getPluginManager().getPlugin("WorldGuard");
-		if (wg == null)
-			getLogger().info(header + "WorldGuard not found. If this is unexpected, maybe WorldGuard or " + getName()
-					+ " are not up to date.");
-		else
-			getLogger().info(header + " WorldGuard found, extra protection enabled.");
-
 		getServer().getPluginManager().registerEvents(this, this);
 
-		if (checkUpdate()) {
-			getServer().getConsoleSender()
-					.sendMessage(header + ChatColor.GREEN
-							+ "An update is available, use /tc update to update to the lastest version (from v"
-							+ desc.getVersion() + " to v" + updater.getRemoteVersion() + ")");
-		}
-
-		config = new Configuration("plugins/CrisTreeCapitator/config.yml", "Cristichi's TreeCapitator");
+		config = new Configuration("plugins/TreeCapitator/config.yml", "TreeCapitator");
 		loadConfiguration();
 		saveConfiguration();
 
+		// Taken from vittorassi/TreeFella
+		PlacedBlocks.setup();
+		PlacedBlocks.get().options().copyDefaults(true);
+		PlacedBlocks.save();
+
 		loadExtraJSONs();
 
-		try {
-			LocalizedString.loadLangs(this);
-
-			LocalizedString.addVariable("{textColor}", textColor.toString());
-			LocalizedString.addVariable("{accentColor}", accentColor.toString());
-			LocalizedString.addVariable("{pluginName}", getName());
-			LocalizedString.addVariable("{pluginVersion}", desc.getVersion());
-		} catch (Exception e) {
-			Bukkit.getLogger().log(Level.WARNING, header
-					+ "Languages could not be loaded. English will be loaded instead. Please check your language .json files.",
-					e);
-		}
-
-		getLogger().info(header + "Enabled");
+		getLogger().info("Enabled");
 	}
 
 	private void loadConfiguration() {
@@ -208,7 +159,7 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 		damageAxe = config.getBoolean(STRG_DAMAGE_AXE, damageAxe);
 		config.setInfo(STRG_DAMAGE_AXE, DESC_DAMAGE_AXE);
 
-		breakAxe = config.getBoolean(STRG_BREAK_AXE, damageAxe);
+		breakAxe = config.getBoolean(STRG_BREAK_AXE, breakAxe);
 		config.setInfo(STRG_BREAK_AXE, DESC_BREAK_AXE);
 
 		replant = config.getBoolean(STRG_REPLANT, replant);
@@ -229,17 +180,7 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 		ignoreLeaves = config.getBoolean(STRG_IGNORE_LEAVES, ignoreLeaves);
 		config.setInfo(STRG_IGNORE_LEAVES, DESC_IGNORE_LEAVES);
 
-		String defaultSP = new String(sneakingPrevention);
-		sneakingPrevention = config.getString(STRG_SNEAKING_PREVENTION, defaultSP).toLowerCase();
-		config.setInfo(STRG_SNEAKING_PREVENTION, DESC_SNEAKING_PREVENTION);
-
-		if (!sneakingPrevention.equalsIgnoreCase("true") && !sneakingPrevention.equals("inverted")
-				&& !sneakingPrevention.equals("false")) {
-			sneakingPrevention = defaultSP;
-		}
-
 		language = config.getString(STRG_LANGUAGE, language);
-		config.setInfo(STRG_LANGUAGE, DESC_LANGUAGE);
 	}
 
 	private void loadExtraJSONs() {
@@ -253,18 +194,19 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 				for (int i = 0; i < strExtraLogs.length; i++) {
 					extraLogs[i] = Material.getMaterial(strExtraLogs[i].toString());
 					if (extraLogs[i] == null) {
-						getLogger().warning(header + "Material \"" + strExtraLogs[i]
+						getLogger().warning("Material \"" + strExtraLogs[i]
 								+ "\" in extra_logs.json could not be recognized as any in-game Material.");
 					}
 				}
-				getLogger().log(Level.INFO, header + "Extra logs from JSON: " + Arrays.toString(extraLogs));
+				extraLogs = Arrays.stream(extraLogs).filter(m -> m != null).toArray(Material[]::new);
+				getLogger().log(Level.INFO, "Extra logs from JSON: " + Arrays.toString(extraLogs));
 			} catch (IOException e) {
-				getLogger().warning(header
-						+ "extra_logs.json could not be read. Only the default logs (+ nether) will be detected.");
+				getLogger().warning(
+						"extra_logs.json could not be read. Only the default logs (+ nether) will be detected.");
 				extraLogs = new Material[0];
 			} catch (ParseException e) {
-				getLogger().warning(header
-						+ "extra_logs.json is an invalid JSON. Please make sure the contents of the file are a valid JSON format. Only the default logs (+ nether) will be detected.");
+				getLogger().warning(
+						"extra_logs.json is an invalid JSON. Please make sure the contents of the file are a valid JSON format. Only the default logs (+ nether) will be detected.");
 				extraLogs = new Material[0];
 			}
 		} else {
@@ -281,7 +223,7 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 				fw.write(jsonData.toJSONString());
 				fw.close();
 			} catch (IOException e) {
-				getLogger().warning(header + "extra_logs.json could not be created. The default log will be used.");
+				getLogger().warning("extra_logs.json could not be created. The default log will be used.");
 				extraLogs = new Material[0];
 			}
 		}
@@ -296,18 +238,19 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 				for (int i = 0; i < strExtraLeaves.length; i++) {
 					extraLeaves[i] = Material.getMaterial(strExtraLeaves[i].toString());
 					if (extraLeaves[i] == null) {
-						getLogger().warning(header + "Material \"" + strExtraLeaves[i]
+						getLogger().warning("Material \"" + strExtraLeaves[i]
 								+ "\" in extra_leaves.json could not be recognized as any in-game Material.");
 					}
 				}
-				getLogger().log(Level.INFO, header + "Extra leaves from JSON: " + Arrays.toString(extraLeaves));
+				extraLeaves = Arrays.stream(extraLeaves).filter(m -> m != null).toArray(Material[]::new);
+				getLogger().log(Level.INFO, "Extra leaves from JSON: " + Arrays.toString(extraLeaves));
 			} catch (IOException e) {
-				getLogger().warning(header
-						+ "extra_leaves.json could not be read. Only the default leaves (+ nether) will be detected.");
+				getLogger().warning(
+						"extra_leaves.json could not be read. Only the default leaves (+ nether) will be detected.");
 				extraLeaves = new Material[0];
 			} catch (ParseException e) {
-				getLogger().warning(header
-						+ "extra_leaves.json is an invalid JSON. Please make sure the contents of the file are a valid JSON format. Only the default leaves (+ nether) will be detected.");
+				getLogger().warning(
+						"extra_leaves.json is an invalid JSON. Please make sure the contents of the file are a valid JSON format. Only the default leaves (+ nether) will be detected.");
 				extraLeaves = new Material[0];
 			}
 		} else {
@@ -324,8 +267,7 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 				fw.write(jsonData.toJSONString());
 				fw.close();
 			} catch (IOException e) {
-				getLogger()
-						.warning(header + "extra_leaves.json could not be created. The default leaves will be used.");
+				getLogger().warning("extra_leaves.json could not be created. The default leaves will be used.");
 				extraLeaves = new Material[0];
 			}
 		}
@@ -344,7 +286,6 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 			config.setValue(STRG_START_ACTIVATED, startActivated);
 			config.setValue(STRG_JOIN_MSG, joinMsg);
 			config.setValue(STRG_IGNORE_LEAVES, ignoreLeaves);
-			config.setValue(STRG_SNEAKING_PREVENTION, sneakingPrevention);
 			config.setValue(STRG_LANGUAGE, language);
 			config.saveConfig();
 		} catch (IOException e) {
@@ -355,24 +296,48 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 	@Override
 	public void onDisable() {
 		saveConfig();
-		getLogger().info(header + "Disabled");
+		getLogger().info("Disabled");
 	}
 
 	@EventHandler
 	public void onJoin(PlayerJoinEvent e) {
 		if (joinMsg) {
 			Player p = e.getPlayer();
-			boolean enabled = startActivated;
-			List<MetadataValue> metas = p.getMetadata(PLAYER_ENABLE_META);
-			for (MetadataValue meta : metas) {
-				enabled = meta.asBoolean();
+			boolean enabled = pluginEnabled.getOrDefault(p.getUniqueId(), startActivated);
+			if (enabled) {
+				send(p, LocalizedString.JOIN_MSG_ENABLED.get(language));
+			} else {
+				send(p, LocalizedString.JOIN_MSG_DISABLED.get(language));
 			}
-			if (enabled)
-				p.sendMessage(header
-						+ LocalizedString.JOIN_MSG_ENABLED.get(language).replace("{player}", p.getDisplayName()));
-			else
-				p.sendMessage(header
-						+ LocalizedString.JOIN_MSG_DISABLED.get(language).replace("{player}", p.getDisplayName()));
+		}
+	}
+
+	@EventHandler
+	public void onQuit(PlayerQuitEvent e) {
+		UUID id = e.getPlayer().getUniqueId();
+		pluginEnabled.remove(id);
+		lastProtectedMsgTime.remove(id);
+	}
+
+	private String blockKey(Block block) {
+		return block.getWorld().getName() + "," + block.getX() + "," + block.getY() + "," + block.getZ();
+	}
+
+	private void send(CommandSender sender, Component message) {
+		sender.sendMessage(header.append(message.colorIfAbsent(textColor)));
+	}
+
+	// Taken from vittorasi/TreeFella
+	@EventHandler
+	public void onBlockPlaceEvent(org.bukkit.event.block.BlockPlaceEvent e) {
+		if (e.isCancelled()) {
+			return;
+		}
+		Block block = e.getBlock();
+
+		if (isLog(block.getType())) {
+			PlacedBlocks.get().set(blockKey(block), 1);
+			PlacedBlocks.save();
 		}
 	}
 
@@ -383,67 +348,57 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 		final Player player = event.getPlayer();
 		ItemStack tool = player.getInventory().getItemInMainHand();
 
-		if (invincibleReplant && !(canPlant(
-				firstBrokenB.getWorld().getBlockAt(firstBrokenB.getX(), firstBrokenB.getY() - 1, firstBrokenB.getZ()),
-				material)
-				|| canPlant(firstBrokenB, firstBrokenB.getWorld()
-						.getBlockAt(firstBrokenB.getX(), firstBrokenB.getY() + 1, firstBrokenB.getZ()).getType()))) {
-			List<MetadataValue> fbbReplantMetas = firstBrokenB.getMetadata(META_INV_REPL);
-			for (MetadataValue replantMeta : fbbReplantMetas) {
-				if (replantMeta.asBoolean()) {
-					long currentTime = System.currentTimeMillis();
-					if (!isSappling(material)) {
-						player.setMetadata("msged", new FixedMetadataValue(this, currentTime));
-						firstBrokenB.removeMetadata(META_INV_REPL, this);
-						firstBrokenB.getWorld()
-								.getBlockAt(firstBrokenB.getX(), firstBrokenB.getY() - 1, firstBrokenB.getZ())
-								.removeMetadata(META_INV_REPL, this);
-						firstBrokenB.getWorld()
-								.getBlockAt(firstBrokenB.getX(), firstBrokenB.getY() + 1, firstBrokenB.getZ())
-								.removeMetadata(META_INV_REPL, this);
-					} else if (player.hasPermission("cristreecapitator.admin")) {
-						player.sendMessage(header + LocalizedString.BROKE_PROTECTED_REPLANT.get(language));
-						player.setMetadata("msged", new FixedMetadataValue(this, currentTime));
-						firstBrokenB.removeMetadata(META_INV_REPL, this);
-						firstBrokenB.getWorld()
-								.getBlockAt(firstBrokenB.getX(), firstBrokenB.getY() - 1, firstBrokenB.getZ())
-								.removeMetadata(META_INV_REPL, this);
-						firstBrokenB.getWorld()
-								.getBlockAt(firstBrokenB.getX(), firstBrokenB.getY() + 1, firstBrokenB.getZ())
-								.removeMetadata(META_INV_REPL, this);
-					} else {
-						List<MetadataValue> metasMsg = player.getMetadata("msged");
-						if (metasMsg.isEmpty() || currentTime - 5000 > metasMsg.get(0).asLong()) {
-							player.sendMessage(header + LocalizedString.ATTEMPT_BREAK_PROTECTED_REPLANT.get(language));
-							player.setMetadata("msged", new FixedMetadataValue(this, currentTime));
-						}
-						event.setCancelled(true);
+		String path = blockKey(firstBrokenB);
+
+		boolean isPlayerPlacedBlock = PlacedBlocks.get().isInt(path);
+
+		Block below = firstBrokenB.getWorld().getBlockAt(firstBrokenB.getX(), firstBrokenB.getY() - 1,
+				firstBrokenB.getZ());
+		Block above = firstBrokenB.getWorld().getBlockAt(firstBrokenB.getX(), firstBrokenB.getY() + 1,
+				firstBrokenB.getZ());
+
+		if (invincibleReplant && !(canPlant(below, material) || canPlant(firstBrokenB, above.getType()))) {
+			if (invincibleReplantBlocks.contains(path)) {
+				long currentTime = System.currentTimeMillis();
+				if (!isSappling(material)) {
+					invincibleReplantBlocks.remove(path);
+					invincibleReplantBlocks.remove(blockKey(below));
+					invincibleReplantBlocks.remove(blockKey(above));
+				} else if (player.hasPermission("treecapitator.admin")) {
+					send(player, LocalizedString.BROKE_PROTECTED_REPLANT.get(language));
+					invincibleReplantBlocks.remove(path);
+					invincibleReplantBlocks.remove(blockKey(below));
+					invincibleReplantBlocks.remove(blockKey(above));
+				} else {
+					UUID id = player.getUniqueId();
+					Long lastMsg = lastProtectedMsgTime.get(id);
+					if (lastMsg == null || currentTime - 5000 > lastMsg) {
+						send(player, LocalizedString.ATTEMPT_BREAK_PROTECTED_REPLANT.get(language));
+						lastProtectedMsgTime.put(id, currentTime);
 					}
-					return;
+					event.setCancelled(true);
 				}
+				return;
 			}
 		}
-		firstBrokenB.removeMetadata(META_INV_REPL, this);
-		firstBrokenB.getWorld().getBlockAt(firstBrokenB.getX(), firstBrokenB.getY() - 1, firstBrokenB.getZ())
-				.removeMetadata(META_INV_REPL, this);
-		firstBrokenB.getWorld().getBlockAt(firstBrokenB.getX(), firstBrokenB.getY() + 1, firstBrokenB.getZ())
-				.removeMetadata(META_INV_REPL, this);
+		invincibleReplantBlocks.remove(path);
+		invincibleReplantBlocks.remove(blockKey(below));
+		invincibleReplantBlocks.remove(blockKey(above));
 
-		if ((wg != null && !wg.createProtectionQuery().testBlockBreak(player, firstBrokenB))
-				|| (sneakingPrevention.equals("true") && player.getPose().equals(Pose.SNEAKING))
-				|| (sneakingPrevention.equals("inverted") && !player.getPose().equals(Pose.SNEAKING))
-				|| (!player.getGameMode().equals(GameMode.SURVIVAL))) {
+		if (isPlayerPlacedBlock) {
+			PlacedBlocks.get().set(path, null);
+			PlacedBlocks.save();
 			return;
 		}
 
-		boolean enabled = startActivated;
-		List<MetadataValue> metas = player.getMetadata(PLAYER_ENABLE_META);
-		for (MetadataValue meta : metas) {
-			enabled = meta.asBoolean();
+		if (!player.isSneaking() || (!player.getGameMode().equals(GameMode.SURVIVAL))) {
+			return;
 		}
 
-		if (enabled && !event.isCancelled() && isLog(material) && player.hasPermission("cristreecapitator.user")
-				&& (vipMode && player.hasPermission("cristreecapitator.vip") || !vipMode)) {
+		boolean enabled = pluginEnabled.getOrDefault(player.getUniqueId(), startActivated);
+
+		if (enabled && !event.isCancelled() && isLog(material) && player.hasPermission("treecapitator.user")
+				&& (vipMode && player.hasPermission("treecapitator.vip") || !vipMode)) {
 			try {
 				// Yes it could use some tuning
 				if (!tool.getType().name().contains("_AXE")) {
@@ -474,10 +429,10 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 
 	private int breakRecNoReplant(Player player, ItemStack tool, Block lego, Material type, int destroyed,
 			boolean stop) {
-		if ((wg != null && !wg.createProtectionQuery().testBlockBreak(player, lego)) || stop)
+		if (stop)
 			return destroyed;
 		Material material = lego.getBlockData().getMaterial();
-		if (isLog(material) || isLeaves(material)) {
+		if ((isLog(material) || isLeaves(material)) && !PlacedBlocks.get().isInt(blockKey(lego))) {
 			if (destroyed > maxBlocks && maxBlocks > 0) {
 				return destroyed;
 			}
@@ -523,51 +478,26 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 	}
 
 	private int breakRecReplant(Player player, ItemStack tool, Block lego, Material type, int destroyed, boolean stop) {
-		if ((wg != null && !wg.createProtectionQuery().testBlockBreak(player, lego)) || stop
-				|| (maxBlocks > 0 && destroyed > maxBlocks))
+		if (stop || (maxBlocks > 0 && destroyed > maxBlocks))
 			return destroyed;
 		Material material = lego.getBlockData().getMaterial();
-		if (isLog(material) || isLeaves(material)) {
+		if ((isLog(material) || isLeaves(material)) && !PlacedBlocks.get().isInt(blockKey(lego))) {
 			World mundo = lego.getWorld();
 			int x = lego.getX(), y = lego.getY(), z = lego.getZ();
 			Block below = mundo.getBlockAt(x, y - 1, z);
 
 			if (canPlant(below, lego.getType())) {
 				Material saplingType = null;
-				switch (lego.getType()) {
-				case ACACIA_LOG:
-					saplingType = Material.ACACIA_SAPLING;
-					break;
-				case BIRCH_LOG:
-					saplingType = Material.BIRCH_SAPLING;
-					break;
-				case DARK_OAK_LOG:
-					saplingType = Material.DARK_OAK_SAPLING;
-					break;
-				case JUNGLE_LOG:
-					saplingType = Material.JUNGLE_SAPLING;
-					break;
-				case OAK_LOG:
-					saplingType = Material.OAK_SAPLING;
-					break;
-				case SPRUCE_LOG:
-					saplingType = Material.SPRUCE_SAPLING;
-					break;
-				case MANGROVE_LOG:
-					saplingType = Material.MANGROVE_PROPAGULE;
-					break;
-				case CRIMSON_STEM:
-					saplingType = Material.CRIMSON_FUNGUS;
-					break;
-				case WARPED_STEM:
-					saplingType = Material.WARPED_FUNGUS;
-					break;
-				case CHERRY_LOG:
-					saplingType = Material.CHERRY_SAPLING;
-					break;
-				default:
-					break;
+				String logType = lego.getType().toString();
+				String[] logTypeTokens = logType.split("_");
+				String plantSuffix = "_SAPLING";
+				if (logType.startsWith("MANGROVE")) {
+					plantSuffix = "_PROPAGULE";
+				} else if (logType.endsWith("_STEM")) {
+					plantSuffix = "_FUNGUS";
 				}
+
+				saplingType = Material.matchMaterial(Arrays.stream(logTypeTokens).limit(logTypeTokens.length - 1).collect(Collectors.joining("_")) + plantSuffix);
 
 				if (damageItem(player, tool, material)) {
 					return destroyed;
@@ -575,8 +505,8 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 					if (lego.breakNaturally()) {
 						if (saplingType != null) {
 							lego.setType(saplingType);
-							lego.setMetadata(META_INV_REPL, new FixedMetadataValue(this, true));
-							below.setMetadata(META_INV_REPL, new FixedMetadataValue(this, true));
+							invincibleReplantBlocks.add(blockKey(lego));
+							invincibleReplantBlocks.add(blockKey(below));
 						}
 						destroyed++;
 					} else {
@@ -624,8 +554,36 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 		return destroyed;
 	}
 
+	private void sendUsage(CommandSender sender, String label, String subcommand, String hint) {
+		send(sender, Component.text("Use: ")
+				.append(Component.text("/" + label + " " + subcommand + " " + hint, accentColor))
+				.append(Component.text(".")));
+	}
+
+	private void sendInvalidArg(CommandSender sender, String label, String subcommand, String hint, String badArg) {
+		send(sender, Component.text("Use: ")
+				.append(Component.text("/" + label + " " + subcommand + " " + hint, accentColor))
+				.append(Component.text(". ("))
+				.append(Component.text(badArg, accentColor))
+				.append(Component.text(" is not a valid argument)")));
+	}
+
+	private void sendConfigSaveError(CommandSender sender, IOException e) {
+		send(sender, Component.text("Error trying to save the value in the configuration file.", errorColor));
+		e.printStackTrace();
+	}
+
+	private Component helpLine(String label, String subcommand, String hint, Component description) {
+		return Component.text("/" + label + " " + subcommand + (hint.isEmpty() ? "" : " " + hint) + ": ", accentColor)
+				.append(description.colorIfAbsent(textColor));
+	}
+
+	private Component settingLine(String name, Component value) {
+		return Component.text(name + ": ", accentColor).append(value.colorIfAbsent(textColor));
+	}
+
 	@Override
-	public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+	public boolean onCommand(@NonNull CommandSender sender, Command command, @NonNull String label, String[] args) {
 		label = label.toLowerCase();
 		boolean bueno = label.equals(command.getLabel());
 		String[] cmds = command.getAliases().toArray(new String[] {});
@@ -643,117 +601,87 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 
 				// TODO: Add the missing localized strings. Also, decide what to do with the command labels, should they be translated? It would mean a lot of extra effort
 				case "help":
-					sender.sendMessage(new String[] { header + LocalizedString.HELP_CMD_COMMANDS.get(language) + "\n",
-							accentColor + "/" + label + " help: " + textColor
-									+ LocalizedString.HELP_CMD_HELP.get(language),
-							accentColor + "/" + label + " version: " + textColor
-									+ LocalizedString.HELP_CMD_VERSION.get(language),
-							accentColor + "/" + label + " update: " + textColor
-									+ LocalizedString.HELP_CMD_UPDATE.get(language),
-							accentColor + "/" + label + " reload: " + textColor
-									+ LocalizedString.HELP_CMD_RELOAD.get(language),
-							accentColor + "/" + label + " toggle <true/false>: " + textColor
-									+ LocalizedString.HELP_CMD_TOGGLE.get(language),
-							accentColor + "/" + label + " settings: " + textColor
-									+ LocalizedString.HELP_CMD_SETTINGS.get(language),
-							accentColor + "/" + label + " setLimit <number>: " + textColor
-									+ LocalizedString.HELP_CMD_SET_LIMIT.get(language),
-							accentColor + "/" + label + " setVipMode <true/false>: " + textColor
-									+ LocalizedString.HELP_CMD_SET_VIP_MODE.get(language),
-							accentColor + "/" + label + " setReplant <true/false>: " + textColor
-									+ LocalizedString.HELP_CMD_SET_REPLANT.get(language),
-							accentColor + "/" + label + " setInvincibleReplanting <true/false>: " + textColor
-									+ LocalizedString.HELP_CMD_SET_INV_REPL.get(language),
-							accentColor + "/" + label + " setAxeNeeded <true/false>: " + textColor
-									+ LocalizedString.HELP_CMD_SET_AXE_NEEDED.get(language),
-							accentColor + "/" + label + " setDamageAxe <true/false>: " + textColor
-									+ LocalizedString.HELP_CMD_SET_DMG_AXE.get(language),
-							accentColor + "/" + label + " setBreakAxes <true/false>: " + textColor
-									+ LocalizedString.HELP_CMD_SET_BREAK_AXE.get(language),
-							accentColor + "/" + label + " setNetherTrees <true/false>: " + textColor
-									+ LocalizedString.HELP_CMD_SET_NETHER_TREES.get(language),
-							accentColor + "/" + label + " setStartActivated <true/false>: " + textColor
-									+ LocalizedString.HELP_CMD_SET_START_ENABLED.get(language),
-							accentColor + "/" + label + " setJoinMsg <true/false>: " + textColor
-									+ LocalizedString.HELP_CMD_SET_SEND_JOIN_MSG.get(language),
-							accentColor + "/" + label + " setIgnoreLeaves <true/false>: " + textColor
-									+ LocalizedString.HELP_CMD_SET_IGNORE_LEAVES.get(language),
-							accentColor + "/" + label + " setCrouchPrevention <true/false>: " + textColor
-									+ LocalizedString.HELP_CMD_SET_CROUCH_PREVENTION.get(language),
-							accentColor + "/" + label + " setLanguage <\"english\"/\"spanish\"/Custom>: " + textColor
-									+ LocalizedString.HELP_CMD_SET_LANG.get(language), });
+					send(sender, LocalizedString.HELP_CMD_COMMANDS.get(language));
+					sender.sendMessage(helpLine(label, "help", "", LocalizedString.HELP_CMD_HELP.get(language)));
+					sender.sendMessage(helpLine(label, "version", "", LocalizedString.HELP_CMD_VERSION.get(language)));
+					sender.sendMessage(helpLine(label, "reload", "", LocalizedString.HELP_CMD_RELOAD.get(language)));
+					sender.sendMessage(
+							helpLine(label, "toggle", "<true/false>", LocalizedString.HELP_CMD_TOGGLE.get(language)));
+					sender.sendMessage(helpLine(label, "settings", "", LocalizedString.HELP_CMD_SETTINGS.get(language)));
+					sender.sendMessage(
+							helpLine(label, "setLimit", "<number>", LocalizedString.HELP_CMD_SET_LIMIT.get(language)));
+					sender.sendMessage(helpLine(label, "setVipMode", "<true/false>",
+							LocalizedString.HELP_CMD_SET_VIP_MODE.get(language)));
+					sender.sendMessage(
+							helpLine(label, "setReplant", "<true/false>", LocalizedString.HELP_CMD_SET_REPLANT.get(language)));
+					sender.sendMessage(helpLine(label, "setInvincibleReplanting", "<true/false>",
+							LocalizedString.HELP_CMD_SET_INV_REPL.get(language)));
+					sender.sendMessage(helpLine(label, "setAxeNeeded", "<true/false>",
+							LocalizedString.HELP_CMD_SET_AXE_NEEDED.get(language)));
+					sender.sendMessage(helpLine(label, "setDamageAxe", "<true/false>",
+							LocalizedString.HELP_CMD_SET_DMG_AXE.get(language)));
+					sender.sendMessage(helpLine(label, "setBreakAxes", "<true/false>",
+							LocalizedString.HELP_CMD_SET_BREAK_AXE.get(language)));
+					sender.sendMessage(helpLine(label, "setNetherTrees", "<true/false>",
+							LocalizedString.HELP_CMD_SET_NETHER_TREES.get(language)));
+					sender.sendMessage(helpLine(label, "setStartActivated", "<true/false>",
+							LocalizedString.HELP_CMD_SET_START_ENABLED.get(language)));
+					sender.sendMessage(helpLine(label, "setJoinMsg", "<true/false>",
+							LocalizedString.HELP_CMD_SET_SEND_JOIN_MSG.get(language)));
+					sender.sendMessage(helpLine(label, "setIgnoreLeaves", "<true/false>",
+							LocalizedString.HELP_CMD_SET_IGNORE_LEAVES.get(language)));
 					break;
 
 				case "version":
-					sender.sendMessage(header + LocalizedString.VERSION_CMD.get(language));
+					send(sender,
+							LocalizedString.VERSION_CMD.get(language, Placeholder.unparsed("name", getName()),
+									Placeholder.unparsed("version", getPluginMeta().getVersion())));
 					break;
 
 				case "config":
 				case "values":
 				case "settings":
-					sender.sendMessage(new String[] { header + LocalizedString.SETTINGS_CMD.get(language) + ":",
-							accentColor + "Join Message: " + textColor
-									+ (joinMsg ? LocalizedString.SETTINGS_YES.get(language)
-											: LocalizedString.SETTINGS_NO.get(language)),
-							accentColor + "Starts Activated: " + textColor
-									+ (startActivated ? LocalizedString.SETTINGS_YES.get(language)
-											: LocalizedString.SETTINGS_NO.get(language)),
-							accentColor + "Limit: " + textColor
-									+ (maxBlocks < 0 ? LocalizedString.SETTINGS_UNLIMITED.get(language) : maxBlocks),
-							accentColor + "Vip Mode: " + textColor
-									+ (vipMode ? LocalizedString.SETTINGS_ENABLED.get(language)
-											: LocalizedString.SETTINGS_DISABLED.get(language)),
-							accentColor + "Replant: " + textColor
-									+ (replant ? LocalizedString.SETTINGS_ENABLED.get(language)
-											: LocalizedString.SETTINGS_DISABLED.get(language)),
-							accentColor + "Invincible replant: " + textColor
-									+ (invincibleReplant ? LocalizedString.SETTINGS_ENABLED.get(language)
-											: LocalizedString.SETTINGS_DISABLED.get(language)),
-							accentColor + "Axe Needed: " + textColor
-									+ (axeNeeded ? LocalizedString.SETTINGS_YES.get(language)
-											: LocalizedString.SETTINGS_NO.get(language)),
-							accentColor + "Axe Damaged: " + textColor
-									+ (axeNeeded ? LocalizedString.SETTINGS_YES.get(language)
-											: LocalizedString.SETTINGS_NO.get(language)),
-							accentColor + "Damage Axe: " + textColor
-									+ (damageAxe ? LocalizedString.SETTINGS_YES.get(language)
-											: LocalizedString.SETTINGS_NO.get(language)),
-							accentColor + "Break Axe: " + textColor
-									+ (breakAxe ? LocalizedString.SETTINGS_YES.get(language)
-											: LocalizedString.SETTINGS_NO.get(language)),
-							accentColor + "Ignore Leaves: " + textColor
-									+ (ignoreLeaves ? LocalizedString.SETTINGS_YES.get(language)
-											: LocalizedString.SETTINGS_NO.get(language)),
-							accentColor + "Crouch Prevention: " + textColor + (sneakingPrevention.equals("true")
-									? LocalizedString.SETTINGS_YES.get(language)
-									: (sneakingPrevention.equals("false") ? LocalizedString.SETTINGS_NO.get(language)
-											: LocalizedString.SETTINGS_INVERTED.get(language))),
-							accentColor + "Language: " + textColor + language.toLowerCase(), });
+					send(sender, LocalizedString.SETTINGS_CMD.get(language));
+					sender.sendMessage(settingLine("Join Message",
+							joinMsg ? LocalizedString.SETTINGS_YES.get(language) : LocalizedString.SETTINGS_NO.get(language)));
+					sender.sendMessage(settingLine("Starts Activated", startActivated
+							? LocalizedString.SETTINGS_YES.get(language) : LocalizedString.SETTINGS_NO.get(language)));
+					sender.sendMessage(settingLine("Limit",
+							maxBlocks < 0 ? LocalizedString.SETTINGS_UNLIMITED.get(language) : Component.text(maxBlocks)));
+					sender.sendMessage(settingLine("Vip Mode", vipMode ? LocalizedString.SETTINGS_ENABLED.get(language)
+							: LocalizedString.SETTINGS_DISABLED.get(language)));
+					sender.sendMessage(settingLine("Replant", replant ? LocalizedString.SETTINGS_ENABLED.get(language)
+							: LocalizedString.SETTINGS_DISABLED.get(language)));
+					sender.sendMessage(settingLine("Invincible replant", invincibleReplant
+							? LocalizedString.SETTINGS_ENABLED.get(language) : LocalizedString.SETTINGS_DISABLED.get(language)));
+					sender.sendMessage(settingLine("Axe Needed",
+							axeNeeded ? LocalizedString.SETTINGS_YES.get(language) : LocalizedString.SETTINGS_NO.get(language)));
+					sender.sendMessage(settingLine("Damage Axe",
+							damageAxe ? LocalizedString.SETTINGS_YES.get(language) : LocalizedString.SETTINGS_NO.get(language)));
+					sender.sendMessage(settingLine("Break Axe",
+							breakAxe ? LocalizedString.SETTINGS_YES.get(language) : LocalizedString.SETTINGS_NO.get(language)));
+					sender.sendMessage(settingLine("Ignore Leaves", ignoreLeaves
+							? LocalizedString.SETTINGS_YES.get(language) : LocalizedString.SETTINGS_NO.get(language)));
+					sender.sendMessage(settingLine("Language", Component.text(language.toLowerCase())));
 					break;
 
 				case "toggle":
-					if (sender instanceof Player) {
-						boolean enabled = startActivated;
-						List<MetadataValue> metas = ((Player) sender).getMetadata(PLAYER_ENABLE_META);
-						for (MetadataValue meta : metas) {
-							enabled = meta.asBoolean();
-						}
-						enabled = !enabled;
-						((Player) sender).setMetadata(PLAYER_ENABLE_META, new FixedMetadataValue(this, enabled));
-						sender.sendMessage(
-								header + " You " + (enabled ? "enabled" : "disabled") + " quick log destroy.");
+					if (sender instanceof Player playerSender) {
+						boolean enabled = !pluginEnabled.getOrDefault(playerSender.getUniqueId(), startActivated);
+						pluginEnabled.put(playerSender.getUniqueId(), enabled);
+						send(sender, Component.text("You " + (enabled ? "enabled" : "disabled") + " quick log destroy."));
 					} else {
-						sender.sendMessage(header + "This command can only be used by players");
+						send(sender, Component.text("This command can only be used by players"));
 					}
 					break;
 
 				case "limit":
 				case "setlimit":
 				case "blocklimit":
-					if (sender.hasPermission("cristreecapitator.admin")) {
+					if (sender.hasPermission("treecapitator.admin")) {
 						if (args.length != 2) {
-							sender.sendMessage(header + "Blocks destroyed at once limit is currently " + accentColor
-									+ maxBlocks + textColor + ".");
+							send(sender, Component.text("Blocks destroyed at once limit is currently ")
+									.append(Component.text(maxBlocks, accentColor)).append(Component.text(".")));
 						} else {
 							try {
 								int nuevoMax = Integer.parseInt(args[1]);
@@ -761,17 +689,12 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 								config.setValue(STRG_MAX_BLOCKS, maxBlocks);
 								try {
 									config.saveConfig();
-									sender.sendMessage(
-											header + "Limit set to " + (nuevoMax < 0 ? "unbounded" : nuevoMax) + ".");
+									send(sender, Component.text("Limit set to " + (nuevoMax < 0 ? "unbounded" : nuevoMax) + "."));
 								} catch (IOException e) {
-									sender.sendMessage(header + errorColor
-											+ "Error trying to save the value in the configuration file.");
-									e.printStackTrace();
+									sendConfigSaveError(sender, e);
 								}
 							} catch (NumberFormatException e) {
-								sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-										+ " <number>" + textColor + ". (" + accentColor + args[1] + textColor
-										+ " is not a valid number)");
+								sendInvalidArg(sender, label, args[0], "<number>", args[1]);
 							}
 						}
 					} else {
@@ -783,10 +706,9 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 				case "setvipmode":
 				case "vipmode":
 				case "vipneeded":
-					if (sender.hasPermission("cristreecapitator.admin")) {
+					if (sender.hasPermission("treecapitator.admin")) {
 						if (args.length != 2) {
-							sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-									+ " <true/false/yes/no>" + textColor + ".");
+							sendUsage(sender, label, args[0], "<true/false/yes/no>");
 						} else {
 							switch (args[1]) {
 							case "true":
@@ -799,20 +721,17 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 								break;
 
 							default:
-								sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-										+ " <true/false/yes/no>" + textColor + ". (" + accentColor + args[1] + textColor
-										+ " is not a valid argument)");
+								sendInvalidArg(sender, label, args[0], "<true/false/yes/no>", args[1]);
 								break;
 							}
 							config.setValue(STRG_VIP_MODE, vipMode);
 							try {
 								config.saveConfig();
-								sender.sendMessage(header + "Vip mode " + accentColor
-										+ (vipMode ? "enabled" : "disabled") + textColor + ".");
+								send(sender, Component.text("Vip mode ")
+										.append(Component.text(vipMode ? "enabled" : "disabled", accentColor))
+										.append(Component.text(".")));
 							} catch (IOException e) {
-								sender.sendMessage(header + errorColor
-										+ "Error trying to save the value in the configuration file.");
-								e.printStackTrace();
+								sendConfigSaveError(sender, e);
 							}
 						}
 					} else {
@@ -823,10 +742,9 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 
 				case "setreplant":
 				case "replant":
-					if (sender.hasPermission("cristreecapitator.admin")) {
+					if (sender.hasPermission("treecapitator.admin")) {
 						if (args.length != 2) {
-							sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-									+ " <true/false/yes/no>" + textColor + ".");
+							sendUsage(sender, label, args[0], "<true/false/yes/no>");
 						} else {
 							switch (args[1]) {
 							case "true":
@@ -839,20 +757,17 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 								break;
 
 							default:
-								sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-										+ " <true/false/yes/no>" + textColor + ". (" + accentColor + args[1] + textColor
-										+ " is not a valid argument)");
+								sendInvalidArg(sender, label, args[0], "<true/false/yes/no>", args[1]);
 								break;
 							}
 							config.setValue(STRG_REPLANT, replant);
 							try {
 								config.saveConfig();
-								sender.sendMessage(header + "Replanting " + accentColor
-										+ (replant ? "enabled" : "disabled") + textColor + ".");
+								send(sender, Component.text("Replanting ")
+										.append(Component.text(replant ? "enabled" : "disabled", accentColor))
+										.append(Component.text(".")));
 							} catch (IOException e) {
-								sender.sendMessage(header + errorColor
-										+ "Error trying to save the value in the configuration file.");
-								e.printStackTrace();
+								sendConfigSaveError(sender, e);
 							}
 						}
 					} else {
@@ -866,10 +781,9 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 				case "invinciblereplants":
 				case "invinciblereplanting":
 				case "invinciblereplantings":
-					if (sender.hasPermission("cristreecapitator.admin")) {
+					if (sender.hasPermission("treecapitator.admin")) {
 						if (args.length != 2) {
-							sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-									+ " <true/false/yes/no>" + textColor + ".");
+							sendUsage(sender, label, args[0], "<true/false/yes/no>");
 						} else {
 							switch (args[1]) {
 							case "true":
@@ -882,20 +796,17 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 								break;
 
 							default:
-								sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-										+ " <true/false/yes/no>" + textColor + ". (" + accentColor + args[1] + textColor
-										+ " is not a valid argument)");
+								sendInvalidArg(sender, label, args[0], "<true/false/yes/no>", args[1]);
 								break;
 							}
 							config.setValue(STRG_INVINCIBLE_REPLANT, invincibleReplant);
 							try {
 								config.saveConfig();
-								sender.sendMessage(header + "Invincible replanted saplings " + accentColor
-										+ (invincibleReplant ? "enabled" : "disabled") + textColor + ".");
+								send(sender, Component.text("Invincible replanted saplings ")
+										.append(Component.text(invincibleReplant ? "enabled" : "disabled", accentColor))
+										.append(Component.text(".")));
 							} catch (IOException e) {
-								sender.sendMessage(header + errorColor
-										+ "Error trying to save the value in the configuration file.");
-								e.printStackTrace();
+								sendConfigSaveError(sender, e);
 							}
 						}
 					} else {
@@ -906,10 +817,9 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 
 				case "axeneeded":
 				case "setaxeneeded":
-					if (sender.hasPermission("cristreecapitator.admin")) {
+					if (sender.hasPermission("treecapitator.admin")) {
 						if (args.length != 2) {
-							sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-									+ " <true/false/yes/no>" + textColor + ".");
+							sendUsage(sender, label, args[0], "<true/false/yes/no>");
 						} else {
 							switch (args[1]) {
 							case "true":
@@ -922,20 +832,16 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 								break;
 
 							default:
-								sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-										+ " <true/false/yes/no>" + textColor + ". (" + accentColor + args[1] + textColor
-										+ " is not a valid argument)");
+								sendInvalidArg(sender, label, args[0], "<true/false/yes/no>", args[1]);
 								break;
 							}
 							config.setValue(STRG_AXE_NEEDED, axeNeeded);
 							try {
 								config.saveConfig();
-								sender.sendMessage(header + (axeNeeded ? "Axe " + accentColor + "needed"
-										: "Axe " + accentColor + "not needed"));
+								send(sender, Component.text("Axe ")
+										.append(Component.text(axeNeeded ? "needed" : "not needed", accentColor)));
 							} catch (IOException e) {
-								sender.sendMessage(header + errorColor
-										+ "Error trying to save the value in the configuration file.");
-								e.printStackTrace();
+								sendConfigSaveError(sender, e);
 							}
 						}
 					} else {
@@ -949,10 +855,9 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 				case "setaxedamage":
 				case "damageaxe":
 				case "axedamage":
-					if (sender.hasPermission("cristreecapitator.admin")) {
+					if (sender.hasPermission("treecapitator.admin")) {
 						if (args.length != 2) {
-							sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-									+ " <true/false/yes/no>" + textColor + ".");
+							sendUsage(sender, label, args[0], "<true/false/yes/no>");
 						} else {
 							switch (args[1]) {
 							case "true":
@@ -965,20 +870,16 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 								break;
 
 							default:
-								sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-										+ " <true/false/yes/no>" + textColor + ". (" + accentColor + args[1] + textColor
-										+ " is not a valid argument)");
+								sendInvalidArg(sender, label, args[0], "<true/false/yes/no>", args[1]);
 								break;
 							}
 							config.setValue(STRG_DAMAGE_AXE, damageAxe);
 							try {
 								config.saveConfig();
-								sender.sendMessage(header + (damageAxe ? "Axes " + accentColor + "can be damaged"
-										: "Axes " + accentColor + "can't be damaged"));
+								send(sender, Component.text("Axes ")
+										.append(Component.text(damageAxe ? "can be damaged" : "can't be damaged", accentColor)));
 							} catch (IOException e) {
-								sender.sendMessage(header + errorColor
-										+ "Error trying to save the value in the configuration file.");
-								e.printStackTrace();
+								sendConfigSaveError(sender, e);
 							}
 						}
 					} else {
@@ -992,10 +893,9 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 				case "setaxebreak":
 				case "breakaxe":
 				case "axebreak":
-					if (sender.hasPermission("cristreecapitator.admin")) {
+					if (sender.hasPermission("treecapitator.admin")) {
 						if (args.length != 2) {
-							sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-									+ " <true/false/yes/no>" + textColor + ".");
+							sendUsage(sender, label, args[0], "<true/false/yes/no>");
 						} else {
 							switch (args[1]) {
 							case "true":
@@ -1008,20 +908,16 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 								break;
 
 							default:
-								sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-										+ " <true/false/yes/no>" + textColor + ". (" + accentColor + args[1] + textColor
-										+ " is not a valid argument)");
+								sendInvalidArg(sender, label, args[0], "<true/false/yes/no>", args[1]);
 								break;
 							}
 							config.setValue(STRG_BREAK_AXE, breakAxe);
 							try {
 								config.saveConfig();
-								sender.sendMessage(header + (breakAxe ? "Axes " + accentColor + "can be broken"
-										: "Axes " + accentColor + "can't be broken"));
+								send(sender, Component.text("Axes ")
+										.append(Component.text(breakAxe ? "can be broken" : "can't be broken", accentColor)));
 							} catch (IOException e) {
-								sender.sendMessage(header + errorColor
-										+ "Error trying to save the value in the configuration file.");
-								e.printStackTrace();
+								sendConfigSaveError(sender, e);
 							}
 						}
 					} else {
@@ -1034,10 +930,9 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 				case "setcutdownnethertrees":
 				case "setnethertrees":
 				case "nethertrees":
-					if (sender.hasPermission("cristreecapitator.admin")) {
+					if (sender.hasPermission("treecapitator.admin")) {
 						if (args.length != 2) {
-							sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-									+ " <true/false/yes/no>" + textColor + ".");
+							sendUsage(sender, label, args[0], "<true/false/yes/no>");
 						} else {
 							switch (args[1]) {
 							case "true":
@@ -1050,21 +945,16 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 								break;
 
 							default:
-								sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-										+ " <true/false/yes/no>" + textColor + ". (" + accentColor + args[1] + textColor
-										+ " is not a valid argument)");
+								sendInvalidArg(sender, label, args[0], "<true/false/yes/no>", args[1]);
 								break;
 							}
 							config.setValue(STRG_ADMIT_NETHER_TREES, admitNetherTrees);
 							try {
 								config.saveConfig();
-								sender.sendMessage(
-										header + (admitNetherTrees ? "Cut down nether trees " + accentColor + "true"
-												: "Cut down nether trees " + accentColor + "false"));
+								send(sender, Component.text("Cut down nether trees ")
+										.append(Component.text(admitNetherTrees ? "true" : "false", accentColor)));
 							} catch (IOException e) {
-								sender.sendMessage(header + errorColor
-										+ "Error trying to save the value in the configuration file.");
-								e.printStackTrace();
+								sendConfigSaveError(sender, e);
 							}
 						}
 					} else {
@@ -1076,10 +966,9 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 				case "setstartactivated":
 				case "startactivated":
 				case "preactivated":
-					if (sender.hasPermission("cristreecapitator.admin")) {
+					if (sender.hasPermission("treecapitator.admin")) {
 						if (args.length != 2) {
-							sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-									+ " <true/false/yes/no>" + textColor + ".");
+							sendUsage(sender, label, args[0], "<true/false/yes/no>");
 						} else {
 							switch (args[1]) {
 							case "true":
@@ -1092,21 +981,16 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 								break;
 
 							default:
-								sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-										+ " <true/false/yes/no>" + textColor + ". (" + accentColor + args[1] + textColor
-										+ " is not a valid argument)");
+								sendInvalidArg(sender, label, args[0], "<true/false/yes/no>", args[1]);
 								break;
 							}
 							config.setValue(STRG_START_ACTIVATED, startActivated);
 							try {
 								config.saveConfig();
-								sender.sendMessage(
-										header + (startActivated ? "Plugin activated by default " + accentColor + "true"
-												: "Plugin activated by default " + accentColor + "false"));
+								send(sender, Component.text("Plugin activated by default ")
+										.append(Component.text(startActivated ? "true" : "false", accentColor)));
 							} catch (IOException e) {
-								sender.sendMessage(header + errorColor
-										+ "Error trying to save the value in the configuration file.");
-								e.printStackTrace();
+								sendConfigSaveError(sender, e);
 							}
 						}
 					} else {
@@ -1119,10 +1003,9 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 				case "setjoinmessage":
 				case "joinmsg":
 				case "joinmessage":
-					if (sender.hasPermission("cristreecapitator.admin")) {
+					if (sender.hasPermission("treecapitator.admin")) {
 						if (args.length != 2) {
-							sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-									+ " <true/false/yes/no>" + textColor + ".");
+							sendUsage(sender, label, args[0], "<true/false/yes/no>");
 						} else {
 							switch (args[1]) {
 							case "true":
@@ -1135,21 +1018,16 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 								break;
 
 							default:
-								sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-										+ " <true/false/yes/no>" + textColor + ". (" + accentColor + args[1] + textColor
-										+ " is not a valid argument)");
+								sendInvalidArg(sender, label, args[0], "<true/false/yes/no>", args[1]);
 								break;
 							}
 							config.setValue(STRG_JOIN_MSG, joinMsg);
 							try {
 								config.saveConfig();
-								sender.sendMessage(header + (joinMsg
-										? "Message reminding /tc toggle on join set to " + accentColor + "true"
-										: "Message reminding /tc toggle on join set to " + accentColor + "false"));
+								send(sender, Component.text("Message reminding /tc toggle on join set to ")
+										.append(Component.text(joinMsg ? "true" : "false", accentColor)));
 							} catch (IOException e) {
-								sender.sendMessage(header + errorColor
-										+ "Error trying to save the value in the configuration file.");
-								e.printStackTrace();
+								sendConfigSaveError(sender, e);
 							}
 						}
 					} else {
@@ -1160,10 +1038,9 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 
 				case "setignoreleaves":
 				case "ignoreleaves":
-					if (sender.hasPermission("cristreecapitator.admin")) {
+					if (sender.hasPermission("treecapitator.admin")) {
 						if (args.length != 2) {
-							sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-									+ " <true/false/yes/no>" + textColor + ".");
+							sendUsage(sender, label, args[0], "<true/false/yes/no>");
 						} else {
 							switch (args[1]) {
 							case "true":
@@ -1176,129 +1053,16 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 								break;
 
 							default:
-								sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-										+ " <true/false/yes/no>" + textColor + ". (" + accentColor + args[1] + textColor
-										+ " is not a valid argument)");
+								sendInvalidArg(sender, label, args[0], "<true/false/yes/no>", args[1]);
 								break;
 							}
 							config.setValue(STRG_IGNORE_LEAVES, ignoreLeaves);
 							try {
 								config.saveConfig();
-								sender.sendMessage(
-										header + (ignoreLeaves ? "Leaves will be " + accentColor + "left untouched"
-												: "Leaves will be " + accentColor + "removed"));
+								send(sender, Component.text("Leaves will be ")
+										.append(Component.text(ignoreLeaves ? "left untouched" : "removed", accentColor)));
 							} catch (IOException e) {
-								sender.sendMessage(header + errorColor
-										+ "Error trying to save the value in the configuration file.");
-								e.printStackTrace();
-							}
-						}
-					} else {
-						noPermission = true;
-					}
-
-					break;
-
-				case "setcrouchprevention":
-				case "setsneakingprevention":
-				case "setcrouch":
-				case "setsneaking":
-					if (sender.hasPermission("cristreecapitator.admin")) {
-						if (args.length != 2) {
-							sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-									+ " <true/false/yes/no/inv/inverted>" + textColor + ".");
-						} else {
-							switch (args[1]) {
-							case "true":
-							case "yes":
-								sneakingPrevention = "true";
-								break;
-							case "false":
-							case "no":
-								sneakingPrevention = "false";
-								break;
-							case "inv":
-							case "inverted":
-							case "reverse":
-							case "reversed":
-								sneakingPrevention = "inverted";
-								break;
-
-							default:
-								sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-										+ " <true/false/yes/no/inv/inverted>" + textColor + ". (" + accentColor
-										+ args[1] + textColor + " is not a valid argument)");
-								break;
-							}
-							config.setValue(STRG_SNEAKING_PREVENTION, sneakingPrevention);
-							try {
-								config.saveConfig();
-								sender.sendMessage(header + (sneakingPrevention.equals("true")
-										? accentColor + "Crouching" + textColor
-												+ " players will break only 1 log at a time."
-										: (sneakingPrevention.equals("false")
-												? accentColor + "Crouching won't affect" + textColor
-														+ " how players break logs."
-												: accentColor + "Only crouching" + textColor
-														+ " players will break 1 log at a time.")));
-							} catch (IOException e) {
-								sender.sendMessage(header + errorColor
-										+ "Error trying to save the value in the configuration file.");
-								e.printStackTrace();
-							}
-						}
-					} else {
-						noPermission = true;
-					}
-
-					break;
-
-				case "reloadlanguage":
-				case "reloadlang":
-				case "relang":
-					if (sender.hasPermission("cristreecapitator.admin")) {
-						if (args.length != 1) {
-							sender.sendMessage(
-									header + "Use: " + accentColor + "/" + label + " " + args[0] + textColor + ".");
-						} else {
-							try {
-								LocalizedString.loadLangs(this);
-								sender.sendMessage(header+"Languages loaded. Now you can use " + accentColor + "/" + label + " setlang <language name>" + textColor + ".");
-							} catch (IOException | ParseException e) {
-								getLogger().log(Level.WARNING, "Error trying to load languages.", e);
-							}
-						}
-					} else {
-						noPermission = true;
-					}
-
-					break;
-
-				case "setlanguage":
-				case "setlang":
-				case "lang":
-					if (sender.hasPermission("cristreecapitator.admin")) {
-						if (args.length != 2) {
-							sender.sendMessage(header + "Use: " + accentColor + "/" + label + " " + args[0]
-									+ " <\"english\"/language name inside .json file>" + textColor + ".");
-						} else {
-							switch (args[1]) {
-							case "default":
-							case "en":
-								language = "english";
-								break;
-
-							default:
-								language = args[1].trim().toLowerCase();
-								break;
-							}
-							config.setValue(STRG_LANGUAGE, language);
-							try {
-								config.saveConfig();
-								sender.sendMessage(header + "Language set to " + accentColor + "\"" + language
-										+ textColor + "\".");
-							} catch (IOException e) {
-								getLogger().log(Level.WARNING, "Error trying to save the value in the configuration file.", e);
+								sendConfigSaveError(sender, e);
 							}
 						}
 					} else {
@@ -1308,33 +1072,10 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 					break;
 
 				case "reload":
-					if (sender.hasPermission("cristreecapitator.admin")) {
+					if (sender.hasPermission("treecapitator.admin")) {
 						loadConfiguration();
 						loadExtraJSONs();
-						sender.sendMessage(header + "Configuration loaded from file.");
-					} else {
-						noPermission = true;
-					}
-
-					break;
-
-				case "update":
-					if (sender.hasPermission("cristreecapitator.admin")) {
-						if (checkUpdate()) {
-							sender.sendMessage(header + "Updating CrisTreeCapitator...");
-							try {
-								updater = new Updater(this, ID, this.getFile(), Updater.UpdateType.DEFAULT, true);
-								updater.getResult();
-								sender.sendMessage(
-										header + "Use " + accentColor + "/reload" + textColor + " to apply changes.");
-							} catch (ParseException e) {
-								sender.sendMessage(header + errorColor
-										+ "An internal error ocurred while trying to update: " + e.getMessage());
-								e.printStackTrace();
-							}
-						} else {
-							sender.sendMessage(header + "This plugin is already up to date.");
-						}
+						send(sender, Component.text("Configuration loaded from file."));
 					} else {
 						noPermission = true;
 					}
@@ -1342,8 +1083,7 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 					break;
 
 				default:
-					sender.sendMessage(
-							header + errorColor + "Command not found, please check \"/" + label + " help\".");
+					send(sender, Component.text("Command not found, please check \"/" + label + " help\".", errorColor));
 					break;
 				}
 			} else {
@@ -1352,7 +1092,7 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 		}
 
 		if (noPermission) {
-			sender.sendMessage(header + errorColor + "You don't have permission to use this command.");
+			send(sender, Component.text("You don't have permission to use this command.", errorColor));
 		}
 		return bueno;
 	}
@@ -1363,12 +1103,11 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 		switch (args.length) {
 		case 0:
 			list.add("help");
-			if (sender.hasPermission("cristreecapitator.admin")) {
-				list.add("update");
+			if (sender.hasPermission("treecapitator.admin")) {
 				list.add("reload");
 			}
 			list.add("toggle");
-			if (sender.hasPermission("cristreecapitator.admin")) {
+			if (sender.hasPermission("treecapitator.admin")) {
 				list.add("settings");
 				list.add("setLimit");
 				list.add("setVipMode");
@@ -1381,15 +1120,12 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 				list.add("setStartActivated");
 				list.add("setJoinMsg");
 				list.add("setIgnoreLeaves");
-				list.add("setCrouchPrevention");
-				list.add("setLanguage");
 			}
 			break;
 		case 1:
 			args[0] = args[0].toLowerCase();
 			switch (args[0]) {
 			case "help":
-			case "update":
 			case "reload":
 			case "toggle":
 				break;
@@ -1397,15 +1133,13 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 			default:
 				if ("help".contains(args[0]))
 					list.add("help");
-				if (sender.hasPermission("cristreecapitator.admin")) {
-					if ("update".contains(args[0]))
-						list.add("update");
+				if (sender.hasPermission("treecapitator.admin")) {
 					if ("reload".contains(args[0]))
 						list.add("reload");
 				}
 				if ("toggle".contains(args[0]))
 					list.add("toggle");
-				if (sender.hasPermission("cristreecapitator.admin")) {
+				if (sender.hasPermission("treecapitator.admin")) {
 					if ("settings".contains(args[0]))
 						list.add("settings");
 					if ("setlimit".contains(args[0]))
@@ -1430,12 +1164,6 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 						list.add("setJoinMsg");
 					if ("setignoreleaves".contains(args[0]))
 						list.add("setIgnoreLeaves");
-					if ("setcrouchprevention".contains(args[0]))
-						list.add("setCrouchPrevention");
-					if ("setsneakingprevention".contains(args[0]))
-						list.add("setSneakingPrevention");
-					if ("setlanguage".contains(args[0]))
-						list.add("setLanguage");
 				}
 				break;
 			}
@@ -1456,19 +1184,9 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 			case "setstartactivated":
 			case "setjoinmsg":
 			case "setignoreleaves":
-			case "setsneaking":
-			case "setcrouch":
 				list.add("true");
 				list.add("false");
 				break;
-			case "setsneakingprevention":
-			case "setcrouchprevention":
-				list.add("true");
-				list.add("inverted");
-				list.add("false");
-			case "setlanguage":
-			case "setlang":
-				// list.add("English");
 
 			default:
 				break;
@@ -1482,7 +1200,7 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 
 	/**
 	 * Deals 1 damage to an item, if possible
-	 * 
+	 *
 	 * @param  player
 	 * @param  tool
 	 * @return        true if item is destroyed or should not be damaged anymore, false if
@@ -1491,10 +1209,9 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 	private boolean damageItem(Player player, ItemStack tool, Material material) {
 		if (axeNeeded && damageAxe && tool != null && isLog(material)) {
 			ItemMeta meta = tool.getItemMeta();
-			if (meta instanceof Damageable) {
+			if (meta instanceof Damageable damageable) {
 				short maxDmg = tool.getType().getMaxDurability();
-				Damageable damageable = (Damageable) meta;
-				int dmg = damageable.getDamage();
+                int dmg = damageable.getDamage();
 
 				// damageable.setDamage(++dmg);
 				// Substituted for the following code by exwundee (https://github.com/exwundee)
@@ -1502,7 +1219,7 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 				{
 					Random rand = new Random();
 
-					int unbLevel = tool.getEnchantmentLevel(Enchantment.DURABILITY);
+					int unbLevel = tool.getEnchantmentLevel(Enchantment.UNBREAKING);
 
 					if (rand.nextInt(unbLevel + 1) == 0) {
 						damageable.setDamage(++dmg);
@@ -1553,8 +1270,8 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 	}
 
 	private boolean isSappling(Material mat) {
-		boolean ret = mat.name().contains("_SAPLING");
-		return ret;
+		String name = mat.name();
+		return name.contains("_SAPLING") || name.contains("_PROPAGULE") || name.contains("_FUNGUS");
 	}
 
 	/**
@@ -1614,34 +1331,34 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 				// Material doesn't exist in this version
 			}
 			for (Material wood : woods) {
-				List<Material> plantSurfaces = Arrays.asList(Material.DIRT, Material.GRASS_BLOCK, Material.MYCELIUM,
-						Material.FARMLAND);
+				List<Material> plantSurfaces = new ArrayList<>(Arrays.asList(Material.DIRT, Material.GRASS_BLOCK,
+						Material.MYCELIUM, Material.FARMLAND));
 				try {
 					plantSurfaces.add(Material.PODZOL);
-				} catch (Exception | NoSuchFieldError e) {
+				} catch (NoSuchFieldError e) {
 					// Material doesn't exist in this version
 				}
 				try {
 					plantSurfaces.add(Material.MOSS_BLOCK);
-				} catch (Exception | NoSuchFieldError e) {
+				} catch (NoSuchFieldError e) {
 					// Material doesn't exist in this version
 				}
 				try {
 					plantSurfaces.add(Material.ROOTED_DIRT);
-				} catch (Exception | NoSuchFieldError e) {
+				} catch (NoSuchFieldError e) {
 					// Material doesn't exist in this version
 				}
 				try {
 					plantSurfaces.add(Material.COARSE_DIRT);
-				} catch (Exception | NoSuchFieldError e) {
+				} catch (NoSuchFieldError e) {
 					// Material doesn't exist in this version
 				}
 				try {
 					plantSurfaces.add(Material.MUD);
-				} catch (Exception | NoSuchFieldError e) {
+				} catch (NoSuchFieldError e) {
 					// Material doesn't exist in this version
 				}
-				treeMap.put(wood, new ArrayList<>(plantSurfaces));
+				treeMap.put(wood, plantSurfaces);
 			}
 
 			try {
@@ -1663,6 +1380,8 @@ public class TreeCapitator extends JavaPlugin implements Listener {
 			// Material doesn't exist in this version
 		}
 
-		return treeMap.getOrDefault(woodType, new ArrayList<>(0)).contains(below.getType());
+		// Unknown/custom log types (e.g. from extra_logs.json) fall back to the standard surfaces.
+		List<Material> surfaces = treeMap.getOrDefault(woodType, treeMap.get(Material.OAK_LOG));
+		return surfaces != null && surfaces.contains(below.getType());
 	}
 }
