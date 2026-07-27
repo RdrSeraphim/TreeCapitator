@@ -1,6 +1,6 @@
 # TreeCapitator
 
-Fork of CrisTreeCapitator for 26.1.* support and purging unused elements.
+Fork of CrisTreeCapitator for 26.1.* support and purging unused elements, also adding placed block protections from TreeFella.
 
 ---
 
